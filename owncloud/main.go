@@ -43,6 +43,9 @@ var (
 	name = "owncloud"
 	srv  pie.Server
 )
+var ch *amqp.Channel
+var q amqp.Queue
+var conn *amqp.Connection
 
 type CreateUserParams struct {
 	Username, Password string
@@ -122,8 +125,65 @@ func (api) Receive(args PlugRequest, reply *PlugRequest) error {
 	return nil
 }
 
+type Queue struct {
+	Name string
+}
+
+func SendMyQueues() {
+	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
+	failOnError(err, "Failed to connect to RabbitMQ")
+
+	ch, err := conn.Channel()
+	failOnError(err, "Failed to open a channel")
+
+	q, err := ch.QueueDeclare(
+		"users", // name
+		false,   // durable
+		false,   // delete when usused
+		false,   // exclusive
+		false,   // no-wait
+		nil,     // arguments
+	)
+	failOnError(err, "Failed to declare a queue")
+	tmp := Queue{Name: "users.owncloud"}
+	str, err := json.Marshal(tmp)
+	log.Println("json sent to users plugin", string(str))
+	if err != nil {
+		log.Println(err)
+	}
+	err = ch.Publish(
+		"",     // exchange
+		q.Name, // routing key
+		false,  // mandatory
+		false,  // immediate
+		amqp.Publishing{
+			ContentType: "encoding/json",
+			Body:        str,
+		})
+	log.Printf(" [x] Sent a Q users.owncloud")
+	failOnError(err, "Failed to publish a message")
+	tmp = Queue{Name: "owncloud.users"}
+	str, err = json.Marshal(tmp)
+	if err != nil {
+		log.Println(err)
+	}
+	err = ch.Publish(
+		"",     // exchange
+		q.Name, // routing key
+		false,  // mandatory
+		false,  // immediate
+		amqp.Publishing{
+			ContentType: "encoding/json",
+			Body:        str,
+		})
+	log.Printf(" [x] Sent a Q owncloud.users")
+	failOnError(err, "Failed to publish a message")
+
+}
+
 func (api) Plug(args interface{}, reply *bool) error {
 	*reply = true
+	SendMyQueues()
 	go LookForMsg()
 	return nil
 }
@@ -134,6 +194,14 @@ func (api) Check(args interface{}, reply *bool) error {
 }
 
 func (api) Unplug(args interface{}, reply *bool) error {
+	SendReturn("stop")
+	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
+	failOnError(err, "Failed to connect to RabbitMQ")
+
+	ch, err := conn.Channel()
+	failOnError(err, "Failed to open a channel")
+	ch.Close()
+	conn.Close()
 	defer os.Exit(0)
 	*reply = true
 	return nil
@@ -146,22 +214,53 @@ func failOnError(err error, msg string) {
 	}
 }
 
-func LookForMsg() {
+func SendReturn(msg string) {
 	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
 	failOnError(err, "Failed to connect to RabbitMQ")
-	defer conn.Close()
 
 	ch, err := conn.Channel()
 	failOnError(err, "Failed to open a channel")
-	defer ch.Close()
+	q, err := ch.QueueDeclare(
+		"owncloud.users", // name
+		false,            // durable
+		false,            // delete when usused
+		false,            // exclusive
+		false,            // no-wait
+		nil,              // arguments
+	)
+	failOnError(err, "Failed to declare a queue")
+	tmp := Queue{Name: msg}
+	str, err := json.Marshal(tmp)
+	log.Println("json sent to users plugin", string(str))
+	if err != nil {
+		log.Println(err)
+	}
+	err = ch.Publish(
+		"",     // exchange
+		q.Name, // routing key
+		false,  // mandatory
+		false,  // immediate
+		amqp.Publishing{
+			ContentType: "encoding/json",
+			Body:        str,
+		})
+	failOnError(err, "Failed to publish a message")
+}
+
+func LookForMsg() {
+	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
+	failOnError(err, "Failed to connect to RabbitMQ")
+
+	ch, err := conn.Channel()
+	failOnError(err, "Failed to open a channel")
 
 	q, err := ch.QueueDeclare(
-		"users", // name
-		false,   // durable
-		false,   // delete when usused
-		false,   // exclusive
-		false,   // no-wait
-		nil,     // arguments
+		"users.owncloud", // name
+		false,            // durable
+		false,            // delete when usused
+		false,            // exclusive
+		false,            // no-wait
+		nil,              // arguments
 	)
 	failOnError(err, "Failed to declare a queue")
 
@@ -193,6 +292,9 @@ func LookForMsg() {
 				if err != nil {
 					log.Println("create error?:")
 					log.Println(err)
+					SendReturn("Plugin owncloud encounter an error in the request")
+				} else {
+					SendReturn("Plugin owncloud successfully completed the request")
 				}
 			}
 		}
