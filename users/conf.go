@@ -45,7 +45,7 @@ func initConf() {
 	conf = getDefaultConf()
 	f := "users.yaml"
 	if runtime.GOOS == "linux" {
-		d := "/etc/nanocloud/users/"
+		d := "/home/antoine/.config/nanocloud/users/"
 		err := os.MkdirAll(d, 0644)
 		if err == nil {
 			f = d + f
